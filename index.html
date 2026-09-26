@@ -49,14 +49,14 @@
   <div id="stats">击败 0 ｜ 存活敌人 0</div>
 </div>
 <div id="cross">+</div>
-<div id="hint">WASD 移动 ｜ J 吐丝攻击 ｜ K 蛛丝荡(按住) ｜ L 跳跃/贴墙 ｜ U 冲刺 ｜ I 格挡 ｜ O 蛛网困敌</div>
+<div id="hint">WASD 移动 ｜ 鼠标左键 吐丝攻击 ｜ 鼠标右键 蛛网困敌 ｜ 空格(按住) 蛛丝荡 ｜ L 跳跃/贴墙 ｜ U 冲刺 ｜ I 格挡</div>
 <div id="toast"></div>
 <div id="flash"></div>
 <div id="overlay">
   <h1>蜘蛛侠：城市之战</h1>
-  <p>WASD 移动 ｜ 鼠标 转动视角</p>
-  <p>J 吐丝攻击 ｜ K 按住=蛛丝荡摆 / 松开=断丝 ｜ L 跳跃 / 空中贴墙飞檐走壁</p>
-  <p>U 冲刺 ｜ I 格挡 ｜ O 发射蛛网困住敌人</p>
+  <p>WASD 移动 ｜ 鼠标 转动视角 ｜ 鼠标左键 吐丝攻击 ｜ 鼠标右键 蛛网困敌</p>
+  <p>空格 按住=蛛丝荡摆 / 松开=断丝 ｜ L 跳跃 / 空中贴墙飞檐走壁</p>
+  <p>U 冲刺 ｜ I 格挡</p>
   <p>蛛丝荡与技能消耗蛛丝能量，静止时缓慢恢复</p>
   <p class="go">▶ 点击画面开始游戏</p>
 </div>
@@ -321,7 +321,7 @@ addEventListener('keydown', e=>{
 });
 addEventListener('keyup', e=>{
   keys[e.code] = false;
-  if(e.code === 'KeyK') endSwing();      // 松开 K：断开蛛丝
+  if(e.code === 'Space' || e.code === 'KeyK') endSwing();  // 松开空格：断开蛛丝
 });
 
 // 鼠标视角（点击画面锁定指针；若浏览器拒绝锁定也能正常游戏）
@@ -349,15 +349,23 @@ addEventListener('mousemove', e=>{
   pitch  = clamp(pitch, -1.25, 0.75);
 });
 
+// 鼠标左键 = 吐丝攻击，右键 = 蛛网困敌
+addEventListener('mousedown', e=>{
+  if(player.dead || !started || overlay.style.display !== 'none') return;
+  if(e.button === 0) shootWeb();
+  else if(e.button === 2) throwTrap();
+});
+addEventListener('contextmenu', e=>e.preventDefault());   // 屏蔽右键菜单
+
 function onKeyPress(code){
   if(player.dead || !started) return;
   switch(code){
-    case 'KeyJ': shootWeb(); break;      // 吐丝攻击
-    case 'KeyK': if(!player.swing) startSwing(); break;  // 蛛丝荡
-    case 'KeyL':                         // 跳跃 / 贴墙
-    case 'Space': jumpOrWall(); break;
+    case 'Space': if(!player.swing) startSwing(); break; // 空格(按住) 蛛丝荡
+    case 'KeyL': jumpOrWall(); break;    // 跳跃 / 贴墙
     case 'KeyU': dash(); break;          // 冲刺
-    case 'KeyO': throwTrap(); break;     // 蛛网困敌
+    case 'KeyJ': shootWeb(); break;      // 吐丝攻击（备用键）
+    case 'KeyK': if(!player.swing) startSwing(); break;  // 蛛丝荡（备用键）
+    case 'KeyO': throwTrap(); break;     // 蛛网困敌（备用键）
   }
 }
 
