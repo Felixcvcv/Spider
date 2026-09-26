@@ -1,0 +1,956 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>蜘蛛侠：城市之战</title>
+<style>
+  html,body{margin:0;padding:0;overflow:hidden;background:#000;height:100%;}
+  canvas{display:block;}
+  /* ---------- HUD：左上角 血量 / 蛛丝能量 ---------- */
+  #hud{position:fixed;top:14px;left:14px;z-index:10;color:#fff;
+       font-family:"Microsoft YaHei",sans-serif;text-shadow:0 1px 3px #000;user-select:none;pointer-events:none;}
+  .bar{display:flex;align-items:center;margin-bottom:6px;}
+  .bar span{width:64px;font-size:13px;}
+  .track{width:210px;height:14px;background:rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.35);
+         border-radius:7px;overflow:hidden;}
+  .fill{height:100%;border-radius:6px;transition:width .12s;}
+  #hp{background:linear-gradient(#ff6677,#c02233);width:100%;}
+  #en{background:linear-gradient(#6fd2ff,#2266cc);width:100%;}
+  #stats{font-size:13px;margin-top:4px;opacity:.95;}
+  /* ---------- 准星 ---------- */
+  #cross{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:10;
+         color:#fff;font-size:18px;text-shadow:0 0 4px #000;pointer-events:none;user-select:none;}
+  /* ---------- 底部按键提示 ---------- */
+  #hint{position:fixed;bottom:12px;left:50%;transform:translateX(-50%);z-index:10;color:#fff;
+        font:13px "Microsoft YaHei",sans-serif;background:rgba(0,0,0,.45);padding:6px 14px;
+        border-radius:14px;pointer-events:none;user-select:none;}
+  /* ---------- 事件提示（能量不足等） ---------- */
+  #toast{position:fixed;top:22%;left:50%;transform:translateX(-50%);z-index:11;color:#ffd24a;
+         font:20px "Microsoft YaHei",sans-serif;text-shadow:0 2px 6px #000;opacity:0;
+         transition:opacity .25s;pointer-events:none;user-select:none;}
+  /* ---------- 受伤红屏 ---------- */
+  #flash{position:fixed;inset:0;z-index:9;background:radial-gradient(rgba(255,0,0,.35),rgba(120,0,0,.55));
+         opacity:0;pointer-events:none;transition:opacity .1s;}
+  /* ---------- 开始 / 死亡 覆盖层 ---------- */
+  #overlay{position:fixed;inset:0;z-index:20;display:flex;flex-direction:column;align-items:center;
+           justify-content:center;background:rgba(0,0,0,.72);color:#fff;cursor:pointer;
+           font-family:"Microsoft YaHei",sans-serif;text-align:center;}
+  #overlay h1{font-size:42px;margin:0 0 14px;color:#ff4455;text-shadow:0 0 18px #ff224488;}
+  #overlay p{font-size:16px;line-height:1.9;margin:4px 0;color:#dde;}
+  #overlay .go{margin-top:18px;font-size:20px;color:#7fe08f;}
+</style>
+</head>
+<body>
+
+<!-- ================= UI 层 ================= -->
+<div id="hud">
+  <div class="bar"><span>血量</span><div class="track"><div id="hp" class="fill"></div></div></div>
+  <div class="bar"><span>蛛丝能量</span><div class="track"><div id="en" class="fill"></div></div></div>
+  <div id="stats">击败 0 ｜ 存活敌人 0</div>
+</div>
+<div id="cross">+</div>
+<div id="hint">WASD 移动 ｜ J 吐丝攻击 ｜ K 蛛丝荡(按住) ｜ L 跳跃/贴墙 ｜ U 冲刺 ｜ I 格挡 ｜ O 蛛网困敌</div>
+<div id="toast"></div>
+<div id="flash"></div>
+<div id="overlay">
+  <h1>蜘蛛侠：城市之战</h1>
+  <p>WASD 移动 ｜ 鼠标 转动视角</p>
+  <p>J 吐丝攻击 ｜ K 按住=蛛丝荡摆 / 松开=断丝 ｜ L 跳跃 / 空中贴墙飞檐走壁</p>
+  <p>U 冲刺 ｜ I 格挡 ｜ O 发射蛛网困住敌人</p>
+  <p>蛛丝荡与技能消耗蛛丝能量，静止时缓慢恢复</p>
+  <p class="go">▶ 点击画面开始游戏</p>
+</div>
+
+<!-- Three.js（CDN，带备用源），不加载任何外部 GLB 模型 -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.147.0/three.min.js"></script>
+<script>if(!window.THREE)document.write('<script src="https:\/\/unpkg.com\/three@0.147.0\/build\/three.min.js"><\/script>');</script>
+
+<script>
+"use strict";
+/* ============================================================================
+ * 蜘蛛侠：城市之战 —— 单文件 3D 小游戏
+ * 模块划分：
+ *   1. 基础场景（渲染器 / 光照 / 雾）
+ *   2. 城市生成（程序几何体：楼房 / 街道 / 地面）
+ *   3. 碰撞检测（楼房 AABB / 地面 / 墙面判断）
+ *   4. 玩家模型（纯几何体拼装蜘蛛侠）
+ *   5. 输入系统（键鼠绑定）
+ *   6. 玩家移动物理（跑动 / 跳跃 / 冲刺）
+ *   7. 蛛丝物理（荡摆绳索约束 / 吐丝 / 蛛网）
+ *   8. 飞檐走壁（贴墙攀爬）
+ *   9. 敌人 AI（巡逻 / 追击 / 攻击 / 被网困）
+ *  10. 第三人称相机
+ *  11. HUD 与音效
+ *  12. 主循环
+ * ==========================================================================*/
+
+// 小工具
+const clamp = (v,a,b)=>Math.max(a,Math.min(b,v));
+function lerpAngle(a,b,t){let d=(b-a)%(Math.PI*2);if(d>Math.PI)d-=Math.PI*2;if(d<-Math.PI)d+=Math.PI*2;return a+d*t;}
+
+/* ============================================================================
+ * 1. 基础场景
+ * ==========================================================================*/
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x87b5e0);
+scene.fog = new THREE.Fog(0x87b5e0, 70, 280);
+
+const camera = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.1, 600);
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const hemi = new THREE.HemisphereLight(0xbfd9ff, 0x3a4034, 0.85);
+scene.add(hemi);
+const sun = new THREE.DirectionalLight(0xffffff, 1.05);
+sun.position.set(90, 160, 70);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, {left:-170, right:170, top:170, bottom:-170, near:10, far:420});
+scene.add(sun);
+
+addEventListener('resize', ()=>{
+  camera.aspect = innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+/* ============================================================================
+ * 2. 城市生成（大量高低不同的方块楼房 + 街道 + 地面，全程序几何体）
+ * ==========================================================================*/
+const CELL = 30;      // 每个街区占地 30m
+const GRID = 7;       // 城市为 (2*GRID+1)^2 个街区
+const buildings = []; // 每栋楼: {minX,maxX,minZ,maxZ,height} —— 供碰撞检测用
+
+// 楼体侧面窗户贴图（Canvas 程序生成）
+function makeWindowTexture(){
+  const c = document.createElement('canvas'); c.width = 64; c.height = 128;
+  const g = c.getContext('2d');
+  g.fillStyle = '#46536a'; g.fillRect(0,0,64,128);
+  for(let y=5; y<122; y+=11) for(let x=5; x<58; x+=11){
+    g.fillStyle = Math.random() < 0.32 ? '#ffe9a0' : '#1c2634';
+    g.fillRect(x, y, 7, 7);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+}
+const winTex = makeWindowTexture();
+
+// 地面贴图（街区 + 街道 + 车道虚线）
+function makeGroundTexture(){
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const g = c.getContext('2d');
+  g.fillStyle = '#3d434c'; g.fillRect(0,0,128,128);          // 街道沥青
+  g.fillStyle = '#565d68'; g.fillRect(14,14,100,100);        // 街区基底
+  g.fillStyle = '#606775'; g.fillRect(18,18,92,92);
+  g.strokeStyle = '#d0cf6a'; g.lineWidth = 2; g.setLineDash([10,10]);
+  g.beginPath(); g.moveTo(7,0); g.lineTo(7,128); g.stroke(); // 车道虚线
+  g.beginPath(); g.moveTo(0,7); g.lineTo(128,7); g.stroke();
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(GRID*2+2, GRID*2+2);
+  return t;
+}
+
+const citySize = (GRID*2+1) * CELL + 90;
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(citySize, citySize),
+  new THREE.MeshLambertMaterial({map: makeGroundTexture()})
+);
+ground.rotation.x = -Math.PI/2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// 生成一栋楼（BoxGeometry + 窗户贴图），并登记碰撞盒
+function addBuilding(x, z, w, d, h){
+  const sideTex = winTex.clone();
+  sideTex.repeat.set(Math.max(1, Math.round((w+d)/2/8)), Math.max(1, Math.round(h/8)));
+  sideTex.needsUpdate = true;
+  const side = new THREE.MeshLambertMaterial({map: sideTex});
+  const top  = new THREE.MeshLambertMaterial({color: 0x4d5563});
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), [side,side,top,top,side,side]);
+  mesh.position.set(x, h/2, z);
+  mesh.castShadow = mesh.receiveShadow = true;
+  scene.add(mesh);
+  buildings.push({minX:x-w/2, maxX:x+w/2, minZ:z-d/2, maxZ:z+d/2, height:h});
+}
+
+// 按街区网格生成楼房：随机宽窄、随机高度（少数摩天楼、少数空地广场）
+for(let gx=-GRID; gx<=GRID; gx++){
+  for(let gz=-GRID; gz<=GRID; gz++){
+    if(Math.random() < 0.10) continue;                 // 10% 街区留空当广场
+    const w = 12 + Math.random()*6;                    // 宽 12~18（保证街道畅通）
+    const d = 12 + Math.random()*6;
+    let h = 12 + Math.pow(Math.random(), 2) * 55;      // 多数矮楼
+    if(Math.random() < 0.12) h = 60 + Math.random()*35;// 少数摩天楼
+    const x = gx*CELL + (Math.random()-0.5)*4;
+    const z = gz*CELL + (Math.random()-0.5)*4;
+    addBuilding(x, z, w, d, h);
+  }
+}
+
+/* ============================================================================
+ * 3. 碰撞检测（楼房 AABB 推出 / 地面与楼顶高度 / 贴墙判定）
+ * ==========================================================================*/
+const P_R = 0.45; // 玩家碰撞半径
+
+// 圆(玩家) vs 所有楼(AABB) 水平推出；撞到墙时返回墙面法线（用于飞檐走壁）
+function collideBuildings(p, radius){
+  let wall = null;
+  for(const b of buildings){
+    if(p.y >= b.height - 0.25) continue;               // 脚高于楼顶：不挡（可站楼顶）
+    const cx = clamp(p.x, b.minX, b.maxX);
+    const cz = clamp(p.z, b.minZ, b.maxZ);
+    let dx = p.x - cx, dz = p.z - cz;
+    const d2 = dx*dx + dz*dz;
+    if(d2 < radius*radius){
+      if(d2 < 1e-8){                                   // 中心陷入楼内：沿最小穿透轴推出
+        const pl = p.x-b.minX+radius, pr = b.maxX-p.x+radius;
+        const pn = p.z-b.minZ+radius, pf = b.maxZ-p.z+radius;
+        const m = Math.min(pl,pr,pn,pf);
+        if(m===pl){ p.x=b.minX-radius; wall=new THREE.Vector3(-1,0,0); }
+        else if(m===pr){ p.x=b.maxX+radius; wall=new THREE.Vector3(1,0,0); }
+        else if(m===pn){ p.z=b.minZ-radius; wall=new THREE.Vector3(0,0,-1); }
+        else { p.z=b.maxZ+radius; wall=new THREE.Vector3(0,0,1); }
+      } else {
+        const d = Math.sqrt(d2); dx/=d; dz/=d;
+        p.x = cx + dx*radius; p.z = cz + dz*radius;
+        wall = new THREE.Vector3(dx, 0, dz);           // 指向楼外 = 墙面法线
+      }
+    }
+  }
+  return wall;
+}
+
+// 脚下支撑高度：默认地面 0；若在某栋楼 footprint 内且脚接近楼顶，则可站上楼顶
+function groundHeight(p){
+  let g = 0;
+  for(const b of buildings){
+    if(p.x>b.minX-0.3 && p.x<b.maxX+0.3 && p.z>b.minZ-0.3 && p.z<b.maxZ+0.3){
+      if(p.y > b.height - 0.6 && b.height > g) g = b.height;
+    }
+  }
+  return g;
+}
+
+// 某点是否在某栋楼内部（相机防穿墙 / 弹道命中用）
+function pointInAnyBuilding(pt, m){
+  m = m || 0.3;
+  for(const b of buildings){
+    if(pt.x>b.minX-m && pt.x<b.maxX+m && pt.z>b.minZ-m && pt.z<b.maxZ+m && pt.y<b.height+m) return true;
+  }
+  return false;
+}
+// 返回 (x,z) 所在的楼（不限高度），无则 null —— 贴墙攀爬探测用
+function buildingAt(x, z){
+  for(const b of buildings){
+    if(x>b.minX && x<b.maxX && z>b.minZ && z<b.maxZ) return b;
+  }
+  return null;
+}
+
+/* ============================================================================
+ * 4. 玩家模型（纯几何体拼装的蜘蛛侠：红蓝配色 + 白色眼罩）
+ * ==========================================================================*/
+function buildPlayerMesh(){
+  const g = new THREE.Group();
+  const red   = new THREE.MeshLambertMaterial({color:0xc0272d});
+  const blue  = new THREE.MeshLambertMaterial({color:0x1b3a8f});
+  const white = new THREE.MeshLambertMaterial({color:0xffffff, emissive:0x999999});
+  const parts = {};
+
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.46,0.55,0.26), red);
+  torso.position.y = 1.12; g.add(torso);
+  const hips = new THREE.Mesh(new THREE.BoxGeometry(0.36,0.22,0.24), blue);
+  hips.position.y = 0.78; g.add(hips);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.19,16,12), red);
+  head.position.y = 1.56; g.add(head);
+  // 白色大眼罩（模型正面朝 +Z）
+  const eyeGeo = new THREE.BoxGeometry(0.075,0.1,0.03);
+  const eyeL = new THREE.Mesh(eyeGeo, white); eyeL.position.set(-0.085,1.59,0.165); eyeL.rotation.z =  0.25; g.add(eyeL);
+  const eyeR = new THREE.Mesh(eyeGeo, white); eyeR.position.set( 0.085,1.59,0.165); eyeR.rotation.z = -0.25; g.add(eyeR);
+  // 四肢：枢轴在肩/胯，方便摆动动画
+  function limb(mat, x, y, len, r1, r2){
+    const pivot = new THREE.Group(); pivot.position.set(x, y, 0);
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(r1, r2, len, 8), mat);
+    m.position.y = -len/2; pivot.add(m); g.add(pivot);
+    return pivot;
+  }
+  parts.armL = limb(red, -0.29, 1.32, 0.62, 0.07, 0.055);
+  parts.armR = limb(red,  0.29, 1.32, 0.62, 0.07, 0.055);
+  parts.legL = limb(blue,-0.13, 0.72, 0.72, 0.085,0.065);
+  parts.legR = limb(blue, 0.13, 0.72, 0.72, 0.085,0.065);
+
+  g.traverse(o=>{ if(o.isMesh) o.castShadow = true; });
+  return {group:g, parts};
+}
+const hero = buildPlayerMesh();
+scene.add(hero.group);
+
+// 玩家状态
+const player = {
+  pos: new THREE.Vector3(15, 0, 15),   // 脚部位置（出生在街道十字路口）
+  vel: new THREE.Vector3(),
+  facing: 0,                           // 模型朝向
+  grounded: true,
+  hp: 100, energy: 100,
+  dead: false,
+  blocking: false,
+  attackCD: 0, dashCD: 0,
+  wallTimer: 0,                        // 最近一次碰到墙的时间余量（贴墙判定用）
+  wallNormal: new THREE.Vector3(1,0,0),
+  onWall: false,
+  swing: null                          // {anchor:Vector3, len:Number} 非空 = 正在荡
+};
+
+/* ============================================================================
+ * 5. 输入系统（WASD + J/K/L/U/I/O + 鼠标视角）
+ * ==========================================================================*/
+const keys = {};
+let yaw = Math.PI*0.75, pitch = -0.18;   // 相机偏航/俯仰
+let started = false;
+
+addEventListener('keydown', e=>{
+  if(e.repeat) return;
+  keys[e.code] = true;
+  onKeyPress(e.code);
+});
+addEventListener('keyup', e=>{
+  keys[e.code] = false;
+  if(e.code === 'KeyK') endSwing();      // 松开 K：断开蛛丝
+});
+
+// 鼠标视角（点击画面锁定指针；若浏览器拒绝锁定也能正常游戏）
+const overlay = document.getElementById('overlay');
+overlay.addEventListener('click', ()=>{
+  try{
+    const r = renderer.domElement.requestPointerLock();
+    if(r && r.catch) r.catch(()=>{});
+  }catch(err){/* 忽略锁定失败 */}
+  started = true;                       // 兜底：无论是否锁定成功都进入游戏
+  overlay.style.display = 'none';
+});
+document.addEventListener('pointerlockchange', ()=>{
+  const locked = !!document.pointerLockElement;
+  if(locked){ started = true; overlay.style.display = 'none'; }
+  else if(started && !player.dead){     // 游戏中按 Esc 解锁 → 暂停提示
+    overlay.querySelector('.go').textContent = '▶ 点击画面继续游戏';
+    overlay.style.display = 'flex';
+  }
+});
+addEventListener('mousemove', e=>{
+  if(!started || overlay.style.display !== 'none') return;
+  yaw   -= e.movementX * 0.0025;
+  pitch -= e.movementY * 0.0025;
+  pitch  = clamp(pitch, -1.25, 0.75);
+});
+
+function onKeyPress(code){
+  if(player.dead || !started) return;
+  switch(code){
+    case 'KeyJ': shootWeb(); break;      // 吐丝攻击
+    case 'KeyK': if(!player.swing) startSwing(); break;  // 蛛丝荡
+    case 'KeyL':                         // 跳跃 / 贴墙
+    case 'Space': jumpOrWall(); break;
+    case 'KeyU': dash(); break;          // 冲刺
+    case 'KeyO': throwTrap(); break;     // 蛛网困敌
+  }
+}
+
+/* ============================================================================
+ * 6. 玩家移动物理（跑动 / 跳跃 / 冲刺 / 重力 / 落地）
+ * ==========================================================================*/
+const GRAV = 30;
+
+// 相机系下的移动输入方向
+function inputMove(){
+  const f = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
+  const r = new THREE.Vector3(-f.z, 0, f.x);
+  const mx = (keys.KeyD?1:0) - (keys.KeyA?1:0);
+  const mz = (keys.KeyW?1:0) - (keys.KeyS?1:0);
+  const v = new THREE.Vector3().addScaledVector(f, mz).addScaledVector(r, mx);
+  if(v.lengthSq() > 0) v.normalize();
+  return v;
+}
+
+function jumpOrWall(){
+  const p = player;
+  if(p.onWall){ exitWall(true); return; }            // 墙上：蹬墙跳
+  if(p.grounded){ p.vel.y = 12; p.grounded = false; beep(520,0.12,'triangle',0.05); return; }
+  if(p.wallTimer > 0 && p.energy > 5) enterWall();   // 空中贴到墙：进入飞檐走壁
+}
+
+function dash(){
+  const p = player;
+  if(p.dashCD > 0) return;
+  if(p.energy < 12){ toast('蛛丝能量不足！'); return; }
+  p.energy -= 12; p.dashCD = 0.8;
+  const dir = inputMove();
+  if(dir.lengthSq() === 0) dir.set(-Math.sin(yaw),0,-Math.cos(yaw));
+  p.vel.x += dir.x * 20; p.vel.z += dir.z * 20;
+  if(!p.grounded) p.vel.y = Math.max(p.vel.y, 1.5);   // 空中冲刺略微托举
+  beep(180, 0.15, 'sawtooth', 0.05);
+}
+
+function updatePlayerNormal(dt, move){
+  const p = player;
+  const SPEED = 9;
+  const tx = move.x * SPEED, tz = move.z * SPEED;
+  const acc = p.grounded ? 60 : 18;                   // 地面转向快，空中弱操控
+  p.vel.x += clamp(tx - p.vel.x, -acc*dt, acc*dt);
+  p.vel.z += clamp(tz - p.vel.z, -acc*dt, acc*dt);
+  p.vel.y -= GRAV * dt;
+  p.vel.y = Math.max(p.vel.y, -55);
+  p.pos.addScaledVector(p.vel, dt);
+}
+
+/* ============================================================================
+ * 7. 蛛丝物理（绳索约束荡摆 / 吐丝弹道 / 蛛网陷阱）
+ * ==========================================================================*/
+// 绳索可视化
+const ropeGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+const ropeLine = new THREE.Line(ropeGeo, new THREE.LineBasicMaterial({color:0xf5f5f5}));
+ropeLine.visible = false;
+scene.add(ropeLine);
+
+// 寻找钩挂点：选一栋"高于玩家且水平距离合适"的楼，锚点取其顶边
+function findAnchor(){
+  const c = player.pos.clone(); c.y += 1.2;
+  let best = null, bd = 1e9;
+  for(const b of buildings){
+    if(b.height < c.y + 3) continue;                  // 必须明显高于玩家
+    const cx = clamp(c.x, b.minX, b.maxX);
+    const cz = clamp(c.z, b.minZ, b.maxZ);
+    const a = new THREE.Vector3(cx, b.height + 1.5, cz);
+    const horiz = Math.hypot(c.x-cx, c.z-cz);
+    if(horiz > 50) continue;                          // 太远勾不到
+    const d = a.distanceTo(c);
+    if(d < bd){ bd = d; best = a; }
+  }
+  return best ? {anchor: best, dist: bd} : null;
+}
+
+function startSwing(){
+  const p = player;
+  if(p.energy < 10){ toast('蛛丝能量不足！'); return; }
+  const hit = findAnchor();
+  if(!hit){ toast('附近没有可勾住的高楼！'); return; }
+  if(p.onWall) exitWall(false);
+  p.swing = {anchor: hit.anchor, len: hit.dist};
+  ropeLine.visible = true;
+  beep(700, 0.1, 'square', 0.04);
+}
+
+function endSwing(){
+  player.swing = null;
+  ropeLine.visible = false;
+}
+
+// 荡摆：半隐式欧拉 + 球面距离约束（超出绳长则拉回并去除径向速度）
+function updateSwing(dt, move){
+  const p = player, s = p.swing;
+  p.vel.y -= 28 * dt;                                 // 重力
+  p.vel.addScaledVector(move, 26 * dt);               // WASD 摆荡加力
+  if(keys.KeyW) s.len = Math.max(4,  s.len - 5*dt);   // W 同时缓慢收线
+  if(keys.KeyS) s.len = Math.min(60, s.len + 10*dt);  // S 放线
+  p.pos.addScaledVector(p.vel, dt);
+
+  // 绳索约束（以胸口为摆锤质点）
+  const c = p.pos.clone(); c.y += 1.2;
+  const d = c.clone().sub(s.anchor);
+  const L = d.length();
+  if(L > s.len){
+    d.multiplyScalar(1/L);
+    const nc = s.anchor.clone().addScaledVector(d, s.len);
+    p.pos.set(nc.x, nc.y - 1.2, nc.z);
+    const vr = p.vel.dot(d);                          // 径向速度（朝外）清零 → 摆动感
+    if(vr > 0) p.vel.addScaledVector(d, -vr);
+  }
+  // 更新绳子贴图
+  const arr = ropeGeo.attributes.position.array;
+  arr[0]=s.anchor.x; arr[1]=s.anchor.y; arr[2]=s.anchor.z;
+  arr[3]=c.x;        arr[4]=c.y;        arr[5]=c.z;
+  ropeGeo.attributes.position.needsUpdate = true;
+}
+
+// ---- 投射物（吐丝子弹 / 蛛网弹） ----
+const shots = [];   // {mesh, vel, life, type:'shot'|'trap', dmg}
+const zones = [];   // {mesh, pos, t} 蛛网区域
+
+function spawnShot(dir, type){
+  const geo = new THREE.SphereGeometry(type==='trap'?0.32:0.18, 10, 8);
+  const mat = new THREE.MeshBasicMaterial({color:0xffffff});
+  const m = new THREE.Mesh(geo, mat);
+  m.position.copy(player.pos); m.position.y += 1.4;
+  m.position.addScaledVector(dir, 0.7);
+  scene.add(m);
+  const speed = type==='trap' ? 26 : 52;
+  shots.push({mesh:m, vel:dir.clone().multiplyScalar(speed), life:2.2, type, dmg:20});
+}
+
+function shootWeb(){
+  const p = player;
+  if(p.attackCD > 0 || p.blocking) return;
+  if(p.energy < 6){ toast('蛛丝能量不足！'); return; }
+  p.energy -= 6; p.attackCD = 0.22;
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  spawnShot(dir, 'shot');
+  hero.parts.armR.rotation.x = -2.4;                  // 抬手动作
+  beep(880, 0.08, 'square', 0.05);
+}
+
+function throwTrap(){
+  const p = player;
+  if(p.attackCD > 0 || p.blocking) return;
+  if(p.energy < 20){ toast('蛛丝能量不足！'); return; }
+  p.energy -= 20; p.attackCD = 0.5;
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  spawnShot(dir, 'trap');
+  shots[shots.length-1].vel.y += 4;                   // 略上抛，形成抛物线
+  beep(320, 0.15, 'square', 0.06);
+}
+
+function createZone(pos){
+  const m = new THREE.Mesh(
+    new THREE.SphereGeometry(3.5, 12, 8),
+    new THREE.MeshBasicMaterial({color:0xffffff, wireframe:true, transparent:true, opacity:0.7})
+  );
+  m.position.copy(pos); m.position.y = Math.max(pos.y, 0.2); m.scale.y = 0.4;
+  scene.add(m);
+  zones.push({mesh:m, pos:m.position.clone(), t:5});
+  beep(240, 0.25, 'triangle', 0.07);
+}
+
+function updateShots(dt){
+  for(let i=shots.length-1; i>=0; i--){
+    const s = shots[i];
+    s.life -= dt;
+    if(s.type === 'trap') s.vel.y -= 25*dt;           // 蛛网弹受重力
+    s.mesh.position.addScaledVector(s.vel, dt);
+    const sp = s.mesh.position;
+    let hit = (sp.y <= 0.05) || pointInAnyBuilding(sp, 0);
+    // 命中敌人
+    for(const e of enemies){
+      if(e.dead) continue;
+      const ec = e.pos.clone(); ec.y += 0.9;
+      if(sp.distanceToSquared(ec) < 1.7){
+        if(s.type === 'shot'){ damageEnemy(e, s.dmg); }
+        hit = true; break;
+      }
+    }
+    if(hit && s.type === 'trap') createZone(sp);
+    if(hit || s.life <= 0){ scene.remove(s.mesh); shots.splice(i,1); }
+  }
+  // 蛛网区域：困住其中所有敌人
+  for(let i=zones.length-1; i>=0; i--){
+    const z = zones[i];
+    z.t -= dt;
+    z.mesh.material.opacity = 0.7 * clamp(z.t/5, 0, 1);
+    for(const e of enemies){
+      if(e.dead) continue;
+      const dx = e.pos.x-z.pos.x, dz = e.pos.z-z.pos.z;
+      if(dx*dx+dz*dz < 12.25 && e.pos.y < 3) e.webbed = Math.max(e.webbed, 3.5);
+    }
+    if(z.t <= 0){ scene.remove(z.mesh); zones.splice(i,1); }
+  }
+}
+
+/* ============================================================================
+ * 8. 飞檐走壁（贴墙攀爬：沿墙上下/横移，翻到楼顶，蹬墙跳）
+ * ==========================================================================*/
+function enterWall(){
+  const p = player;
+  p.onWall = true;
+  p.vel.set(0,0,0);
+  if(p.swing) endSwing();
+  beep(500, 0.08, 'triangle', 0.04);
+}
+
+function exitWall(leap){
+  const p = player;
+  p.onWall = false;
+  if(leap){                                          // 蹬墙跳：沿墙法线弹出 + 上升
+    p.vel.copy(p.wallNormal).multiplyScalar(9);
+    p.vel.y = 10;
+    beep(600, 0.1, 'triangle', 0.05);
+  }
+}
+
+function updateWall(dt){
+  const p = player, n = p.wallNormal;
+  // 探测面前是否还有墙体（用胸口前方一点查楼）
+  const probe = p.pos.clone().addScaledVector(n, -(P_R+0.35));
+  const b = buildingAt(probe.x, probe.z);
+  if(!b || b.height < p.pos.y + 0.8){
+    // 爬到楼顶边缘：翻身上楼
+    p.pos.addScaledVector(n, -0.9);
+    p.pos.y += 1.2;
+    exitWall(false);
+    p.vel.set(-n.x*3, 2.5, -n.z*3);
+    return;
+  }
+  const tangent = new THREE.Vector3(-n.z, 0, n.x);
+  const up   = (keys.KeyW?1:0) - (keys.KeyS?1:0);     // W 上爬 / S 下滑
+  const side = (keys.KeyD?1:0) - (keys.KeyA?1:0);     // A/D 沿墙横移
+  p.vel.set(0, up*5, 0).addScaledVector(tangent, side*5);
+  p.pos.addScaledVector(p.vel, dt);
+  p.pos.addScaledVector(n, -1.5*dt);                  // 持续贴紧墙面（触发碰撞维持 wallTimer）
+}
+
+/* ============================================================================
+ * 9. 敌人 AI（巡逻 → 发现玩家追击 → 近身攻击；被蛛网困住暂停；被吐丝扣血）
+ * ==========================================================================*/
+const ENEMY_COUNT = 8;
+const enemies = [];
+let kills = 0;
+
+// 怪物模型：紫黑身体 + 红眼 + 六条腿 + 网茧（被困时显示）
+function buildMonster(){
+  const g = new THREE.Group();
+  const bodyMat = new THREE.MeshLambertMaterial({color:0x4a2358});
+  const body = new THREE.Mesh(new THREE.SphereGeometry(0.55,14,10), bodyMat);
+  body.position.y = 0.85; body.scale.y = 0.8; g.add(body);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.3,12,8), bodyMat);
+  head.position.set(0, 1.02, 0.42); g.add(head);
+  const eyeMat = new THREE.MeshBasicMaterial({color:0xff2222});
+  const eyeGeo = new THREE.SphereGeometry(0.06,8,6);
+  const eL = new THREE.Mesh(eyeGeo, eyeMat); eL.position.set(-0.12,1.08,0.66); g.add(eL);
+  const eR = new THREE.Mesh(eyeGeo, eyeMat); eR.position.set( 0.12,1.08,0.66); g.add(eR);
+  const legs = [];
+  const legMat = new THREE.MeshLambertMaterial({color:0x2c1236});
+  for(let i=0;i<6;i++){
+    const side = i%2===0 ? -1 : 1;
+    const pivot = new THREE.Group();
+    pivot.position.set(0.4*side, 0.75, (Math.floor(i/2)-1)*0.35);
+    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.035,0.03,0.95,6), legMat);
+    leg.position.y = -0.42;
+    pivot.add(leg);
+    pivot.rotation.z = 0.75*side;
+    g.add(pivot); legs.push(pivot);
+  }
+  const cocoon = new THREE.Mesh(
+    new THREE.SphereGeometry(0.95,10,8),
+    new THREE.MeshBasicMaterial({color:0xffffff, wireframe:true, transparent:true, opacity:0.85})
+  );
+  cocoon.position.y = 0.85; cocoon.visible = false; g.add(cocoon);
+  g.traverse(o=>{ if(o.isMesh) o.castShadow = true; });
+  return {group:g, legs, bodyMat, cocoon};
+}
+
+// 随机街道点（不在任何楼内）
+function randomStreetPoint(){
+  for(let i=0;i<60;i++){
+    const x = (Math.random()*2-1) * GRID*CELL;
+    const z = (Math.random()*2-1) * GRID*CELL;
+    let ok = true;
+    for(const b of buildings){
+      if(x>b.minX-1.5 && x<b.maxX+1.5 && z>b.minZ-1.5 && z<b.maxZ+1.5){ ok=false; break; }
+    }
+    if(ok) return new THREE.Vector3(x,0,z);
+  }
+  return new THREE.Vector3(15,0,-15);
+}
+
+function spawnEnemy(){
+  const built = buildMonster();
+  const e = {
+    pos: randomStreetPoint(),
+    hp: 50, state: 'patrol',
+    target: null, webbed: 0, atkCD: 0,
+    dead: false, deadT: 0, flashT: 0,
+    mesh: built.group, legs: built.legs, bodyMat: built.bodyMat, cocoon: built.cocoon,
+    animT: Math.random()*10
+  };
+  e.mesh.position.copy(e.pos);
+  scene.add(e.mesh);
+  enemies.push(e);
+}
+for(let i=0;i<ENEMY_COUNT;i++) spawnEnemy();
+
+function damageEnemy(e, dmg){
+  if(e.dead) return;
+  e.hp -= dmg;
+  e.flashT = 0.12;
+  e.state = 'chase';                                  // 被打会激怒
+  beep(200, 0.1, 'square', 0.06);
+  if(e.hp <= 0){
+    e.dead = true; e.deadT = 0;
+    e.cocoon.visible = false;
+    kills++;
+    beep(90, 0.4, 'sawtooth', 0.08);
+  }
+}
+
+function updateEnemy(e, dt){
+  e.animT += dt;
+  if(e.atkCD > 0) e.atkCD -= dt;
+  // 受击白闪
+  if(e.flashT > 0){ e.flashT -= dt; e.bodyMat.emissive.setHex(0xaaaaaa); }
+  else e.bodyMat.emissive.setHex(0x000000);
+
+  // 死亡：下沉消失后重生到别处
+  if(e.dead){
+    e.deadT += dt;
+    e.mesh.position.y = -e.deadT*0.9;
+    e.mesh.rotation.x = e.deadT*1.5;
+    if(e.deadT > 3){
+      e.dead = false; e.hp = 50; e.state = 'patrol'; e.webbed = 0;
+      e.pos.copy(randomStreetPoint());
+      e.mesh.rotation.x = 0;
+    }
+    return;
+  }
+
+  // 被蛛网困住：暂停一切移动
+  if(e.webbed > 0){
+    e.webbed -= dt;
+    e.cocoon.visible = true;
+    e.mesh.position.copy(e.pos);
+    return;
+  }
+  e.cocoon.visible = false;
+
+  // 状态切换：距离发现玩家则追击
+  const toP = player.pos.clone().sub(e.pos);
+  const dist = toP.length();
+  if(!player.dead && dist < 26) e.state = 'chase';
+  else if(e.state === 'chase' && dist > 42) e.state = 'patrol';
+
+  let speed = 0, dir = null;
+  if(e.state === 'chase' && !player.dead){
+    dir = toP.setY(0).normalize();
+    speed = 5.5;
+    if(dist < 2.6){                                   // 近身攻击
+      speed = 0;
+      if(e.atkCD <= 0){
+        e.atkCD = 1.2;
+        hurtPlayer(10, e.pos);
+      }
+    }
+  } else {                                            // 巡逻：随机游走
+    if(!e.target || e.pos.distanceTo(e.target) < 1.5) e.target = randomStreetPoint();
+    dir = e.target.clone().sub(e.pos).setY(0);
+    if(dir.lengthSq() > 0.01) dir.normalize(); else dir = null;
+    speed = 2.2;
+  }
+
+  if(dir && speed > 0){
+    e.pos.addScaledVector(dir, speed*dt);
+    e.mesh.rotation.y = Math.atan2(dir.x, dir.z);
+    // 腿部摆动动画
+    for(let i=0;i<e.legs.length;i++)
+      e.legs[i].rotation.x = Math.sin(e.animT*9 + i*1.7) * 0.45 * (speed>3?1:0.5);
+  }
+  collideBuildings(e.pos, 0.7);                       // 敌人同样不穿楼
+  e.pos.y = 0;                                        // 敌人只在街面活动
+  e.mesh.position.copy(e.pos);
+}
+
+// 玩家受击（格挡减免 75%）
+function hurtPlayer(dmg, fromPos){
+  const p = player;
+  if(p.dead) return;
+  if(p.blocking){ dmg *= 0.25; beep(150, 0.08, 'square', 0.04); }
+  else beep(110, 0.2, 'sawtooth', 0.07);
+  p.hp -= dmg;
+  const kb = p.pos.clone().sub(fromPos).setY(0);
+  if(kb.lengthSq() > 0){ kb.normalize(); p.vel.addScaledVector(kb, p.blocking?2:6); }
+  flashScreen();
+  if(p.hp <= 0){
+    p.hp = 0; p.dead = true;
+    endSwing(); exitWall(false);
+    overlay.querySelector('h1').textContent = '你被击败了！';
+    overlay.querySelector('.go').textContent = '3 秒后重新投入战斗…';
+    overlay.style.display = 'flex';
+    document.exitPointerLock();
+    setTimeout(respawn, 3000);
+  }
+}
+
+function respawn(){
+  const p = player;
+  p.pos.set(15, 0, 15); p.vel.set(0,0,0);
+  p.hp = 100; p.energy = 100; p.dead = false;
+  for(const e of enemies){                            // 敌人重新洗牌
+    e.pos.copy(randomStreetPoint()); e.state = 'patrol'; e.webbed = 0; e.hp = 50; e.dead = false;
+    e.mesh.rotation.x = 0; e.mesh.position.copy(e.pos);
+  }
+  overlay.querySelector('h1').textContent = '蜘蛛侠：城市之战';
+  overlay.querySelector('.go').textContent = '▶ 点击画面继续游戏';
+}
+
+/* ============================================================================
+ * 10. 第三人称尾随相机（鼠标转视角 + 防穿墙）
+ * ==========================================================================*/
+function updateCamera(){
+  const target = player.pos.clone(); target.y += 1.6;
+  const cp = Math.cos(pitch);
+  const forward = new THREE.Vector3(-Math.sin(yaw)*cp, Math.sin(pitch), -Math.cos(yaw)*cp);
+  // 从远到近找第一个不穿楼、不入地的位置
+  let dist = 6.5;
+  for(let d=6.5; d>0.8; d-=0.3){
+    const pt = target.clone().addScaledVector(forward, -d);
+    if(pt.y > 0.35 && !pointInAnyBuilding(pt, 0.35)){ dist = d; break; }
+    dist = d;
+  }
+  camera.position.copy(target).addScaledVector(forward, -dist);
+  if(camera.position.y < 0.35) camera.position.y = 0.35;
+  camera.lookAt(target.clone().addScaledVector(forward, 8));
+}
+
+/* ============================================================================
+ * 11. HUD 与简易音效（WebAudio 程序生成，无外部音频）
+ * ==========================================================================*/
+const elHp = document.getElementById('hp');
+const elEn = document.getElementById('en');
+const elStats = document.getElementById('stats');
+const elToast = document.getElementById('toast');
+const elFlash = document.getElementById('flash');
+
+let toastTimer = null;
+function toast(msg){
+  elToast.textContent = msg;
+  elToast.style.opacity = 1;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(()=>{ elToast.style.opacity = 0; }, 1200);
+}
+function flashScreen(){
+  elFlash.style.opacity = 1;
+  setTimeout(()=>{ elFlash.style.opacity = 0; }, 130);
+}
+let AC = null;
+function beep(freq, dur, type, vol){
+  try{
+    AC = AC || new (window.AudioContext || window.webkitAudioContext)();
+    const o = AC.createOscillator(), g = AC.createGain();
+    o.type = type || 'square';
+    o.frequency.value = freq;
+    g.gain.value = vol || 0.05;
+    o.connect(g); g.connect(AC.destination);
+    o.start();
+    g.gain.exponentialRampToValueAtTime(0.0001, AC.currentTime + dur);
+    o.stop(AC.currentTime + dur);
+  }catch(err){/* 无音频环境时静默 */}
+}
+
+function updateHUD(){
+  elHp.style.width = clamp(player.hp, 0, 100) + '%';
+  elEn.style.width = clamp(player.energy, 0, 100) + '%';
+  let alive = 0;
+  for(const e of enemies) if(!e.dead) alive++;
+  elStats.textContent = '击败 ' + kills + ' ｜ 存活敌人 ' + alive;
+}
+
+/* ============================================================================
+ * 12. 主循环：玩家物理 → 碰撞 → 敌人 AI → 弹道 → 相机 → 渲染
+ * ==========================================================================*/
+const clock = new THREE.Clock();
+
+function updatePlayer(dt){
+  const p = player;
+  if(p.dead) return;
+  if(p.attackCD > 0) p.attackCD -= dt;
+  if(p.dashCD > 0) p.dashCD -= dt;
+  p.blocking = !!keys.KeyI && !p.swing && !p.onWall;
+
+  const move = inputMove();
+
+  // --- 三态移动：贴墙 / 荡摆 / 普通 ---
+  if(p.onWall) updateWall(dt);
+  else if(p.swing) updateSwing(dt, move);
+  else updatePlayerNormal(dt, move);
+
+  // --- 碰撞：楼房推出 + 贴墙判定 ---
+  const wall = collideBuildings(p.pos, P_R);
+  if(wall){
+    p.wallNormal.copy(wall);
+    p.wallTimer = 0.15;
+    if(!p.onWall){                                    // 撞墙消掉指向墙内的速度
+      const vn = p.vel.dot(wall);
+      if(vn < 0) p.vel.addScaledVector(wall, -vn);
+    }
+  } else if(p.wallTimer > 0) p.wallTimer -= dt;
+
+  // --- 碰撞：地面 / 楼顶 ---
+  const g = groundHeight(p.pos);
+  if(p.pos.y <= g){
+    p.pos.y = g;
+    if(p.vel.y < 0) p.vel.y = 0;
+    p.grounded = true;
+    if(p.swing) endSwing();                           // 落地自动收丝
+    if(p.onWall) exitWall(false);
+  } else {
+    p.grounded = p.pos.y <= g + 0.01;
+  }
+
+  // 出界保护
+  const LIM = citySize/2 - 8;
+  p.pos.x = clamp(p.pos.x, -LIM, LIM);
+  p.pos.z = clamp(p.pos.z, -LIM, LIM);
+
+  // --- 蛛丝能量：荡摆/贴墙消耗，静止缓慢恢复 ---
+  const moving = (p.vel.x*p.vel.x + p.vel.z*p.vel.z) > 4;
+  if(p.swing) p.energy -= 7*dt;
+  else if(p.onWall) p.energy -= 3*dt;
+  else if(!moving && p.grounded) p.energy += 10*dt;   // 静止快速回能
+  else p.energy += 2.5*dt;
+  p.energy = clamp(p.energy, 0, 100);
+  if(p.swing && p.energy <= 0){ endSwing(); toast('蛛丝能量耗尽！'); }
+  if(p.onWall && p.energy <= 0) exitWall(false);
+
+  // --- 模型位置与朝向 ---
+  hero.group.position.copy(p.pos);
+  const hv = Math.hypot(p.vel.x, p.vel.z);
+  let desired = p.facing;
+  if(p.swing || p.onWall || hv > 1) desired = Math.atan2(p.vel.x, p.vel.z);
+  else if(move.lengthSq() > 0) desired = Math.atan2(move.x, move.z);
+  p.facing = lerpAngle(p.facing, desired, clamp(12*dt, 0, 1));
+  hero.group.rotation.y = p.facing;
+
+  // --- 肢体动画 ---
+  const parts = hero.parts;
+  const t = clock.elapsedTime;
+  if(p.swing || p.onWall){                            // 荡摆/贴墙：双臂上举
+    parts.armL.rotation.x = lerpAngle(parts.armL.rotation.x, -2.7, 10*dt);
+    parts.armR.rotation.x = lerpAngle(parts.armR.rotation.x, -2.7, 10*dt);
+    parts.legL.rotation.x = 0.4; parts.legR.rotation.x = -0.2;
+  } else if(p.blocking){                              // 格挡：双臂护胸前
+    parts.armL.rotation.x = -1.4; parts.armR.rotation.x = -1.4;
+    parts.armL.rotation.z =  0.6; parts.armR.rotation.z = -0.6;
+    parts.legL.rotation.x = parts.legR.rotation.x = 0;
+  } else if(!p.grounded){                             // 滞空
+    parts.armL.rotation.x = -0.6; parts.armR.rotation.x = -0.6;
+    parts.armL.rotation.z = parts.armR.rotation.z = 0;
+    parts.legL.rotation.x = 0.5; parts.legR.rotation.x = 0.3;
+  } else {                                            // 地面跑动摇摆
+    const f = clamp(hv/9, 0, 1);
+    const s = Math.sin(t*11) * 0.75 * f;
+    parts.armL.rotation.x =  s; parts.armR.rotation.x = -s;
+    parts.legL.rotation.x = -s; parts.legR.rotation.x =  s;
+    parts.armL.rotation.z = parts.armR.rotation.z = 0;
+  }
+  if(p.attackCD > 0.08) parts.armR.rotation.x = -2.4; // 吐丝抬手
+}
+
+function animate(){
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05);
+  if(started){
+    updatePlayer(dt);
+    for(const e of enemies) updateEnemy(e, dt);
+    updateShots(dt);
+    updateHUD();
+  }
+  updateCamera();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>
